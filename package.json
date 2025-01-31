@@ -1,0 +1,9 @@
+{
+	"type": "module",
+	"devDependencies": {
+		"@adraffy/blocksmith": "^0.1.50",
+		"@resolverworks/ezccip": "^0.0.22",
+		"@unruggable/gateways": "^0.1.5",
+		"ethers": "^6.13.5"
+	}
+}

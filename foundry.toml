@@ -1,0 +1,16 @@
+# https://book.getfoundry.sh/reference/config/overview
+
+[profile.default]
+src = "contracts"
+libs = ["node_modules", "lib"]
+
+remappings = [
+	'@unruggable/=node_modules/@unruggable/',
+	'@ensdomains/ens-contracts=lib/ens-contracts/',
+	'@openzeppelin/contracts=lib/openzeppelin-contracts/contracts/',
+]
+
+# npm i @unruggable/gateways
+# forge i foundry-rs/forge-std
+# forge i ensdomains/ens-contracts
+# forge i OpenZeppelin/openzeppelin-contracts@v5.0.2
