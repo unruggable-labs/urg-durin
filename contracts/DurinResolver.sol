@@ -20,7 +20,7 @@ error Unreachable();
 
 // https://github.com/namestonehq/durin/blob/main/src/L2Registry.sol
 uint256 constant SLOT_SUPPLY = 7;
-uint256 constant SLOT_URI = 8;
+uint256 constant SLOT_URI = 9;
 uint256 constant SLOT_NAME = 10;
 uint256 constant SLOT_TEXTS = 12;
 uint256 constant SLOT_ADDRS = 13;
@@ -28,7 +28,7 @@ uint256 constant SLOT_CHASH = 14;
 
 uint256 constant EVM_BIT = 1 << 31;
 
-bytes4 constant SEL_description = 0x00000001;
+bytes4 constant SEL_SUPPLY = 0x00000001;
 
 contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarget {
     using GatewayFetcher for GatewayRequest;
@@ -115,7 +115,7 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
             if (labelhash == bytes32(0)) {
                 if (coinType == 60) {
                     return abi.encode(abi.encodePacked(verifier));
-                } else if (uint32(coinType) == coinType && coinType == EVM_BIT | link.chainId) {
+                } else if (coinType == EVM_BIT | link.chainId) {
                     return abi.encode(abi.encodePacked(link.target));
                 } else {
                     return abi.encode("");
@@ -133,7 +133,7 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
                 if (keyHash == keccak256("description")) {
                     req.setSlot(SLOT_SUPPLY);
                     req.read().setOutput(0);
-                    selector = SEL_description;
+                    selector = SEL_SUPPLY;
                 } else if (keyHash == keccak256("name")) {
                     req.setSlot(SLOT_NAME);
                     req.readBytes().setOutput(0);
@@ -159,7 +159,7 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
         } else {
             return new bytes(64);
         }
-		//req.debug("chonk");
+        //req.debug("chonk");
         fetch(IGatewayVerifier(verifier), req, this.resolveCallback.selector, abi.encode(selector), link.gateways);
     }
 
@@ -171,7 +171,7 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
         bytes4 selector = abi.decode(carry, (bytes4));
         if (selector == IAddrResolver.addr.selector) {
             return abi.encode(uint160(bytes20(values[0])));
-        } else if (selector == SEL_description) {
+        } else if (selector == SEL_SUPPLY) {
             uint256 supply = uint256(bytes32(values[0]));
             return abi.encode(abi.encodePacked(Strings.toString(supply), " subdomains"));
         } else {

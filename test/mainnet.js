@@ -4,7 +4,7 @@ import { ENS_REGISTRY, overrideENS } from "./ens.js";
 
 const foundry = await Foundry.launch({
 	fork: "https://rpc.ankr.com/eth",
-	infoLog: true,
+	infoLog: false,
 });
 
 const DurinResolver = await foundry.deploy({
@@ -42,6 +42,9 @@ await foundry.confirm(
 );
 
 const resolver0 = await foundry.provider.getResolver(BASENAME);
+console.log(await resolver0.getAddress());
+console.log(await resolver0.getAddress(8453));
+console.log(await resolver0.getText('name'));
 console.log(await resolver0.getText('description'));
 
 const resolver = await foundry.provider.getResolver(`slobo.${BASENAME}`);
