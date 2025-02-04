@@ -2,6 +2,9 @@ import { Foundry } from "@adraffy/blocksmith";
 import { ethers } from "ethers";
 import { ENS_REGISTRY, overrideENS } from "./ens.js";
 
+// TODO: make this actual test
+// TODO: find name with contenthash set
+
 const foundry = await Foundry.launch({
 	fork: "https://rpc.ankr.com/eth",
 	infoLog: false,

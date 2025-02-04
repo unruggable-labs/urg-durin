@@ -43,12 +43,12 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
     struct Link {
         address target;
         uint96 chainId;
-        address verifier; // optional
+        IGatewayVerifier verifier; // optional
         string[] gateways; // optional
     }
 
     /// Mapping of default verifiers for a chain ID
-    mapping(uint96 => address) _verifiers;
+    mapping(uint96 => IGatewayVerifier) _verifiers;
 
     /// Mapping of ENS node (namehash) representations to their resolution configuration
     mapping(bytes32 => Link) _links;
@@ -66,22 +66,18 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
     /**
      * @notice Define the appropriate default Unruggable Gateway Verifier with a chainId
      */
-    function setVerifier(uint96 chainId, address verifier) external onlyOwner {
+    function setVerifier(uint96 chainId, IGatewayVerifier verifier) external onlyOwner {
         _verifiers[chainId] = verifier;
     }
 
     /**
      * @notice Set resolution configuration data for a specified ENS node (namehash)
      */
-    function setLink(bytes32 node, uint96 chainId, address target, address verifier, string[] memory gateways)
+    function setLink(bytes32 node, uint96 chainId, address target, IGatewayVerifier verifier, string[] memory gateways)
         external
+        onlyNodeOperator(node)
     {
-        if (!_canModifyNode(node, msg.sender)) revert Unauthorized();
-        Link storage link = _links[node];
-        link.chainId = chainId;
-        link.target = target;
-        link.verifier = verifier;
-        link.gateways = gateways;
+        _links[node] = Link(target, chainId, verifier, gateways);
     }
 
     /**
@@ -90,24 +86,28 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
     function getLink(bytes32 node)
         external
         view
-        returns (uint96 chainId, address verifier, address target, string[] memory gateways)
+        returns (address target, uint96 chainId, IGatewayVerifier verifier, string[] memory gateways)
     {
         Link storage link = _links[node];
-        chainId = link.chainId;
         target = link.target;
+        chainId = link.chainId;
         verifier = link.verifier;
         gateways = link.gateways;
     }
 
     /**
      * @notice Discern if an address owns the node in the ENS registry (or NameWrapper)
-     * TODO Can this be a modifier?
      */
     function _canModifyNode(bytes32 node, address op) internal view returns (bool) {
         address owner = _ens.owner(node);
         return owner == address(_wrapper)
             ? _wrapper.canModifyName(node, op)
             : (owner == op || _ens.isApprovedForAll(owner, op));
+    }
+
+    modifier onlyNodeOperator(bytes32 node) {
+        if (!_canModifyNode(node, msg.sender)) revert Unauthorized();
+        _;
     }
 
     /**
@@ -121,11 +121,13 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
         /// Get the resolution configuration for that node
         Link storage link = _links[basenode];
         if (link.target == address(0)) revert Unreachable(); // no target
-        address verifier = link.verifier;
+        IGatewayVerifier verifier = link.verifier;
         /// If no verifier is set for that node specifically, use the chain default
-        if (verifier == address(0)) verifier = _verifiers[link.chainId];
-        /// If there is no node specific verifier or chain default, we cannot continue
-        if (verifier == address(0)) revert Unreachable();
+        if (address(verifier) == address(0)) {
+            verifier = _verifiers[link.chainId];
+            /// If no chain default, we cannot continue
+            if (address(verifier) == address(0)) revert Unreachable();
+        }
         /// Get the labelhash of the base node for which this contract is the resolver
         bytes32 labelhash = _parseSubdomain(dns, offset);
         GatewayRequest memory req = GatewayFetcher.newRequest(1);
@@ -147,7 +149,7 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
                 req.readBytes().setOutput(0);
             }
 
-        /// ENSIP-9?: addr(node, coinType)
+            /// ENSIP-9?: addr(node, coinType)
         } else if (selector == IAddressResolver.addr.selector) {
             (, uint256 coinType) = abi.decode(request[4:], (bytes32, uint256));
             if (labelhash == bytes32(0)) {
@@ -168,7 +170,7 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
                 /// Read the address and set it in output 0 of the return data passed to our CCIP read callback
                 req.readBytes().setOutput(0);
             }
-        /// ENSIP-5: text(node, key)
+            /// ENSIP-5: text(node, key)
         } else if (selector == ITextResolver.text.selector) {
             /// Decode the key from the target calldata. We already have the DNS encoded representation of the name.
             (, string memory key) = abi.decode(request[4:], (bytes32, string));
@@ -194,25 +196,22 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
                 req.readBytes().setOutput(0);
             }
 
-        /// ENSIP-?: contenthash
+            /// ENSIP-?: contenthash
         } else if (selector == IContentHashResolver.contenthash.selector) {
             if (labelhash == bytes32(0)) {
                 return abi.encode("");
             } else {
                 req.setSlot(SLOT_CHASH);
                 req.push(labelhash).follow();
-                /// TODO: Do the read
+                req.readBytes().setOutput(0);
             }
-        /// Unsupported selector - return zero bytes
+            /// Unsupported selector - return zero bytes
         } else {
             return new bytes(64);
         }
-        /// Uncomment for debug output
-        //req.debug("chonk");
-
         /// Execute the Unruggable Gateways CCIP request
         /// Pass through the called function selector in our carry bytes such that the callback can appropriately decode the response
-        fetch(IGatewayVerifier(verifier), req, this.resolveCallback.selector, abi.encode(selector), link.gateways);
+        fetch(verifier, req, this.resolveCallback.selector, abi.encode(selector), link.gateways);
     }
 
     /**
@@ -245,7 +244,6 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
         // return dns.namehash(0);
         uint256 prev = 1;
         while (true) {
-
             uint256 next = prev + uint8(dns[prev - 1]);
             if (next == offset) {
                 return dns.keccak(prev, next - prev);
