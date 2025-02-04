@@ -34,9 +34,12 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
     using GatewayFetcher for GatewayRequest;
     using BytesUtils for bytes;
 
+    /// Constant address paths for ENS contracts
     ENS immutable _ens;
     INameWrapper immutable _wrapper;
 
+    /// A struct definition that contains resolution configuration for a node (namehash)
+    /// Using Unruggable Gateways for trustless data resolution
     struct Link {
         address target;
         uint96 chainId;
@@ -44,7 +47,10 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
         string[] gateways; // optional
     }
 
+    /// Mapping of default verifiers for a chain ID
     mapping(uint96 => address) _verifiers;
+
+    /// Mapping of ENS node (namehash) representations to their resolution configuration
     mapping(bytes32 => Link) _links;
 
     constructor(ENS ens, INameWrapper wrapper) Ownable(msg.sender) {
@@ -53,13 +59,20 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
     }
 
     function supportsInterface(bytes4 x) external pure returns (bool) {
+        /// We confirm implementation of ERC165 for interface discovery, and ENSIP-10 for wildcard resolution
         return x == type(IERC165).interfaceId || x == type(IExtendedResolver).interfaceId;
     }
 
+    /**
+     * @notice Define the appropriate default Unruggable Gateway Verifier with a chainId
+     */
     function setVerifier(uint96 chainId, address verifier) external onlyOwner {
         _verifiers[chainId] = verifier;
     }
 
+    /**
+     * @notice Set resolution configuration data for a specified ENS node (namehash)
+     */
     function setLink(bytes32 node, uint96 chainId, address target, address verifier, string[] memory gateways)
         external
     {
@@ -71,6 +84,9 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
         link.gateways = gateways;
     }
 
+    /**
+     * @notice Get resolution configuration data for a specified ENS node (namehash)
+     */
     function getLink(bytes32 node)
         external
         view
@@ -83,6 +99,10 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
         gateways = link.gateways;
     }
 
+    /**
+     * @notice Discern if an address owns the node in the ENS registry (or NameWrapper)
+     * TODO Can this be a modifier?
+     */
     function _canModifyNode(bytes32 node, address op) internal view returns (bool) {
         address owner = _ens.owner(node);
         return owner == address(_wrapper)
@@ -90,26 +110,44 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
             : (owner == op || _ens.isApprovedForAll(owner, op));
     }
 
+    /**
+     * @notice Implementation of ENSIP-10 that allows for resolution
+     * @param dns - The DNS encoded representation of the name
+     * @param request - The calldata for the request
+     */
     function resolve(bytes memory dns, bytes calldata request) external view returns (bytes memory) {
+        /// Find the node for which THIS contract is the resolver
         (bytes32 basenode, uint256 offset) = _findSelf(dns);
+        /// Get the resolution configuration for that node
         Link storage link = _links[basenode];
         if (link.target == address(0)) revert Unreachable(); // no target
         address verifier = link.verifier;
+        /// If no verifier is set for that node specifically, use the chain default
         if (verifier == address(0)) verifier = _verifiers[link.chainId];
-        if (verifier == address(0)) revert Unreachable(); // no verifier
+        /// If there is no node specific verifier or chain default, we cannot continue
+        if (verifier == address(0)) revert Unreachable();
+        /// Get the labelhash of the base node for which this contract is the resolver
         bytes32 labelhash = _parseSubdomain(dns, offset);
         GatewayRequest memory req = GatewayFetcher.newRequest(1);
         req.setTarget(link.target);
         bytes4 selector = bytes4(request);
+        /// Build a Unruggable Gateways request based on the function selector of the passed calldata
+        /// ENSIP-1: addr
         if (selector == IAddrResolver.addr.selector) {
             if (labelhash == bytes32(0)) {
                 return abi.encode(verifier);
             } else {
+                /// We want to read data from the mapping with a slot root `SLOT_ADDRS` defined within the Durin contracts
                 req.setSlot(SLOT_ADDRS);
+                /// Push the labelhash, and follow. Builds the slot ID of `mapping[labelhash]`
                 req.push(labelhash).follow();
+                /// Push the ETH cointype (60), and follow. Builds the slot ID of `mapping[labelhash][60]`
                 req.push(60).follow();
+                /// Read the address and set it in output 0 of the return data passed to our CCIP read callback
                 req.readBytes().setOutput(0);
             }
+
+        /// ENSIP-9?: addr(node, coinType)
         } else if (selector == IAddressResolver.addr.selector) {
             (, uint256 coinType) = abi.decode(request[4:], (bytes32, uint256));
             if (labelhash == bytes32(0)) {
@@ -121,12 +159,18 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
                     return abi.encode("");
                 }
             } else {
+                /// We want to read data from the mapping with a slot root `SLOT_ADDRS` defined within the Durin contracts
                 req.setSlot(SLOT_ADDRS);
+                /// Push the labelhash, and follow. Builds the slot ID of `mapping[labelhash]`
                 req.push(labelhash).follow();
+                /// Push the cointype decoded from the target calldata, and follow. Builds the slot ID of `mapping[labelhash][coinType]`
                 req.push(coinType).follow();
+                /// Read the address and set it in output 0 of the return data passed to our CCIP read callback
                 req.readBytes().setOutput(0);
             }
+        /// ENSIP-5: text(node, key)
         } else if (selector == ITextResolver.text.selector) {
+            /// Decode the key from the target calldata. We already have the DNS encoded representation of the name.
             (, string memory key) = abi.decode(request[4:], (bytes32, string));
             bytes32 keyHash = keccak256(bytes(key));
             if (labelhash == bytes32(0)) {
@@ -149,26 +193,38 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
                 req.push(key).follow();
                 req.readBytes().setOutput(0);
             }
+
+        /// ENSIP-?: contenthash
         } else if (selector == IContentHashResolver.contenthash.selector) {
             if (labelhash == bytes32(0)) {
                 return abi.encode("");
             } else {
                 req.setSlot(SLOT_CHASH);
                 req.push(labelhash).follow();
+                /// TODO: Do the read
             }
+        /// Unsupported selector - return zero bytes
         } else {
             return new bytes(64);
         }
+        /// Uncomment for debug output
         //req.debug("chonk");
+
+        /// Execute the Unruggable Gateways CCIP request
+        /// Pass through the called function selector in our carry bytes such that the callback can appropriately decode the response
         fetch(IGatewayVerifier(verifier), req, this.resolveCallback.selector, abi.encode(selector), link.gateways);
     }
 
+    /**
+     * @notice The callback for the `OffchainLookup` triggered by our implementation of `IExtendedResolver` (ENSIP-10)
+     */
     function resolveCallback(bytes[] memory values, uint8, /*exitCode*/ bytes memory carry)
         external
         pure
         returns (bytes memory)
     {
         bytes4 selector = abi.decode(carry, (bytes4));
+        /// If we have an address as bytes, re-encode it correctly for decoding at the library level
         if (selector == IAddrResolver.addr.selector) {
             return abi.encode(uint160(bytes20(values[0])));
         } else if (selector == SEL_SUPPLY) {
@@ -180,6 +236,7 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
     }
 
     function _parseSubdomain(bytes memory dns, uint256 offset) internal pure returns (bytes32 labelhash) {
+        /// End of the encoding, no labelhash
         if (offset == 0) return bytes32(0);
         // support deep subdomains
         // dns = dns.substring(0, offset+2);
@@ -188,6 +245,7 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
         // return dns.namehash(0);
         uint256 prev = 1;
         while (true) {
+
             uint256 next = prev + uint8(dns[prev - 1]);
             if (next == offset) {
                 return dns.keccak(prev, next - prev);
@@ -195,10 +253,19 @@ contract DurinResolver is IERC165, IExtendedResolver, Ownable, GatewayFetchTarge
         }
     }
 
+    /**
+     * @notice ENSIP-10 hones down the subname tree until it finds a defined resolver. This internal helper returns the node (namehash) of the name for which THIS contract is the resolver
+     * @param dns The DNS encoded name
+     * @return node The node (namehash) in the subname tree for which the resolver is set
+     * @return offset The offset in the encoded name at which that node begins
+     */
     function _findSelf(bytes memory dns) internal view returns (bytes32 node, uint256 offset) {
         unchecked {
             while (true) {
+                /// Get the namehash for the name splitting it based on the current offset
+                /// The recursive nature of this call will yield a response for sub.name.eth, then name.eth etc until broken
                 node = dns.namehash(offset);
+                /// We break the loop when we find the level at which THIS contract is the resolver
                 if (_ens.resolver(node) == address(this)) break;
                 uint256 size = uint8(dns[offset]);
                 if (size == 0) revert Unreachable();
